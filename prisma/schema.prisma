@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  fasil
+  penghuni
+}
+
+enum JenisPresensi {
+  subuh
+  malam
+}
+
+enum StatusPresensi {
+  hadir
+  terlambat
+  alpa
+  izin
+}
+
+enum StatusIzin {
+  pending
+  disetujui
+  ditolak
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  nim_nip    String?  @unique
+  nama       String
+  email      String   @unique
+  password   String
+  role       Role
+  id_kamar   Int?
+  kamar      Kamar?   @relation(fields: [id_kamar], references: [id])
+  presensi   Presensi[]
+  izin       Izin[]   @relation("PenghuniIzin")
+  izinDiproses Izin[] @relation("FasilIzin")
+  created_at DateTime @default(now())
+}
+
+model Gedung {
+  id         Int    @id @default(autoincrement())
+  nama_gedung String
+  kamar      Kamar[]
+}
+
+model Kamar {
+  id        Int    @id @default(autoincrement())
+  id_gedung Int
+  gedung    Gedung @relation(fields: [id_gedung], references: [id])
+  no_kamar  String
+  lantai    Int
+  penghuni  User[]
+}
+
+model Presensi {
+  id              Int            @id @default(autoincrement())
+  id_user         Int
+  user            User           @relation(fields: [id_user], references: [id])
+  jenis_presensi  JenisPresensi
+  tanggal         DateTime       @db.Date
+  waktu_presensi  DateTime
+  lat             Float
+  long            Float
+  foto_wajah      String
+  status          StatusPresensi
+  keterangan      String?
+
+  @@unique([id_user, jenis_presensi, tanggal])
+}
+
+model Izin {
+  id           Int        @id @default(autoincrement())
+  id_user      Int
+  user         User       @relation("PenghuniIzin", fields: [id_user], references: [id])
+  tanggal_izin DateTime   @db.Date
+  alasan       String
+  file_bukti   String
+  status_izin  StatusIzin @default(pending)
+  approved_by  Int?
+  fasil        User?      @relation("FasilIzin", fields: [approved_by], references: [id])
+  created_at   DateTime   @default(now())
+}
