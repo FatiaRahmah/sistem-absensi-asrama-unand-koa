@@ -1,12 +1,21 @@
 require('dotenv').config();
+const path = require('path');
+const serve = require('koa-static');
 const Koa = require('koa');
 const prisma = require('./config/database');
 
 const app = new Koa();
 const PORT = process.env.PORT || 3000;
 
-app.use(async (ctx) => {
-  ctx.body = { message: 'Server jalan, cek koneksi DB di terminal' };
+// Serve static frontend files from /public
+app.use(serve(path.join(__dirname, '../public')));
+
+app.use(async (ctx, next) => {
+  if (ctx.path === '/api/health') {
+    ctx.body = { message: 'Server jalan, cek koneksi DB di terminal' };
+  } else {
+    await next();
+  }
 });
 
 async function testConnection() {
