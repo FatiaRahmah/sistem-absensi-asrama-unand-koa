@@ -172,23 +172,20 @@ const CameraModule = {
   // Capture Photo
   capturePhoto() {
     const video = document.getElementById('webcam-video');
+    if (!this.isCameraActive || !video || video.readyState < 2) {
+      showToast('Aktifkan kamera sebelum mengirim presensi.', 'warning');
+      return;
+    }
+
     const canvas = document.createElement('canvas');
     canvas.width = 640;
     canvas.height = 480;
     const ctx = canvas.getContext('2d');
 
-    if (this.isCameraActive && video) {
-      ctx.save();
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#10b981';
-      ctx.font = 'bold 20px Plus Jakarta Sans';
-      ctx.fillText('BIOMETRIC VERIFIED 98.4%', 180, 240);
-    }
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
 
     const dataUrl = canvas.toDataURL('image/jpeg');
 
@@ -198,7 +195,7 @@ const CameraModule = {
       setTimeout(() => { flashEl.style.opacity = '0'; }, 200);
     }
 
-    openVerificationSuccessModal(dataUrl);
+    App.submitAttendance(dataUrl);
   },
 
   setupCameraControls() {

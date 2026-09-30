@@ -2,40 +2,34 @@
    Portal Asrama UNAND - Master Data, Accounts & Authentication
    ========================================================================== */
 
+const ApiClient = {
+  token: localStorage.getItem('asrama_token'),
+
+  async request(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
+    if (!(options.body instanceof FormData) && options.body) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetch(`/api${path}`, { ...options, headers });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Permintaan ke server gagal');
+    return result;
+  },
+
+  setToken(token) {
+    this.token = token;
+    if (token) localStorage.setItem('asrama_token', token);
+    else localStorage.removeItem('asrama_token');
+  }
+};
+
 const AppData = {
   // Current logged in session user
   sessionUser: null, // set to user object upon login
 
-  // Pre-configured Accounts for Login Validation
-  accounts: [
-    {
-      nim: "2311522001",
-      password: "password123",
-      role: "penghuni",
-      name: "Muhammad Fajar",
-      roleTitle: "Penghuni / Asrama Putra Lt. 2 - Kamar 204",
-      avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-      allowedViews: ["view-camera", "view-riwayat"]
-    },
-    {
-      nim: "198504122010121001",
-      password: "password123",
-      role: "fasilitator",
-      name: "Ilham Ramadhan",
-      roleTitle: "Fasilitator Gedung A & B (35 Binaan)",
-      avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
-      allowedViews: ["view-fasilitator", "view-riwayat-fasil"]
-    },
-    {
-      nim: "admin",
-      password: "adminpassword",
-      role: "admin",
-      name: "Administrator Asrama",
-      roleTitle: "Pengelola Master Data Asrama UNAND",
-      avatar: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80",
-      allowedViews: ["view-admin", "view-fasilitator", "view-riwayat-fasil"]
-    }
-  ],
+  accounts: [],
 
   // Active Schedules:
   // Shubuh: 04.00 - 06.00 WIB | Malam: 18.00 - 20.30 WIB
@@ -282,3 +276,12 @@ const AppData = {
     }
   ]
 };
+
+Object.assign(AppData, {
+  riwayatPenghuniPrivate: [],
+  riwayatPresensi: [],
+  studentsMaster: [],
+  facilitatorsMaster: [],
+  approvalQueue: [],
+  monitoringShubuh: []
+});

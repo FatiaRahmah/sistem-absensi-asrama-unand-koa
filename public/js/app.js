@@ -6,6 +6,16 @@ document.addEventListener('DOMContentLoaded', () => {
   App.init();
 });
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character]);
+}
+
 const App = {
   activeView: 'view-camera',
 
@@ -25,9 +35,18 @@ const App = {
   },
 
   /* Auth State Check */
-  checkAuthState() {
+  async checkAuthState() {
     const loginOverlay = document.getElementById('login-screen-overlay');
     const appContainer = document.querySelector('.app-container');
+
+    if (ApiClient.token && !AppData.sessionUser) {
+      try {
+        const result = await ApiClient.request('/auth/me');
+        AppData.sessionUser = result.user;
+      } catch {
+        ApiClient.setToken(null);
+      }
+    }
 
     if (!AppData.sessionUser) {
       if (loginOverlay) loginOverlay.style.display = 'flex';
@@ -64,17 +83,6 @@ const App = {
       });
     }
 
-    // Quick demo login chip buttons
-    document.querySelectorAll('.demo-chip-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const demoNim = btn.getAttribute('data-nim');
-        const demoPass = btn.getAttribute('data-pass');
-        if (inputNim) inputNim.value = demoNim;
-        if (inputPass) inputPass.value = demoPass;
-        this.login(demoNim, demoPass);
-      });
-    });
-
     // Logout button handler
     const btnLogout = document.getElementById('btn-logout-header');
     if (btnLogout) {
@@ -82,19 +90,59 @@ const App = {
     }
   },
 
-  login(nim, password) {
-    const account = AppData.accounts.find(a => a.nim === nim && a.password === password);
+  async login(identifier, password) {
+    try {
+      const result = await ApiClient.request('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ identifier, password })
+      });
+      ApiClient.setToken(result.token);
+      AppData.sessionUser = result.user;
+      await this.checkAuthState();
+      showToast(`Selamat datang, ${result.user.name}!`, 'success');
+    } catch (error) {
+      showToast(error.message, 'danger');
+    }
+  },
 
-    if (account) {
-      AppData.sessionUser = account;
-      this.checkAuthState();
-      showToast(`Selamat datang kembali, ${account.name}!`, "success");
-    } else {
-      showToast("NIM / Password tidak valid! Silakan periksa kembali.", "danger");
+  async submitAttendance(photo) {
+    const now = new Date();
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    const session = minutes >= 240 && minutes <= 360
+      ? 'subuh'
+      : minutes >= 1080 && minutes <= 1230 ? 'malam' : null;
+    if (!session) {
+      showToast('Presensi hanya dapat dikirim pada jadwal Shubuh atau Malam.', 'warning');
+      return;
+    }
+
+    try {
+      const position = await new Promise((resolve, reject) => {
+        if (!navigator.geolocation) return reject(new Error('Perangkat tidak mendukung lokasi GPS'));
+        navigator.geolocation.getCurrentPosition(resolve, () => reject(new Error('Izin lokasi GPS diperlukan')), {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        });
+      });
+      const result = await ApiClient.request('/presensi', {
+        method: 'POST',
+        body: JSON.stringify({
+          jenis_presensi: session,
+          lat: position.coords.latitude,
+          long: position.coords.longitude,
+          foto: photo
+        })
+      });
+      openVerificationSuccessModal(photo, result.record);
+      await this.renderAllViews();
+    } catch (error) {
+      showToast(error.message, 'danger');
     }
   },
 
   logout() {
+    ApiClient.setToken(null);
     AppData.sessionUser = null;
     this.checkAuthState();
     showToast("Anda telah keluar dari sistem.", "info");
@@ -165,13 +213,147 @@ const App = {
     }
   },
 
-  /* Render Data across all views */
-  renderAllViews() {
-    this.renderRiwayatTable();
-    this.renderAdminMasterTable();
-    this.renderAdminFacilitatorsTable();
-    this.renderFacilitatorQueue();
-    this.renderFacilitatorMonitoring();
+  formatDate(value) {
+    return new Date(value).toLocaleDateString('id-ID', {
+      day: 'numeric', month: 'short', year: 'numeric'
+    });
+  },
+
+  roomLabel(user) {
+    if (!user.kamar) return 'Belum ditetapkan';
+    const building = escapeHtml(user.kamar.gedung?.nama_gedung || 'Gedung');
+    return `${building} • Lantai ${Number(user.kamar.lantai)} • Kamar ${escapeHtml(user.kamar.no_kamar)}`;
+  },
+
+  /* Render data loaded from the authenticated API */
+  async renderAllViews() {
+    try {
+      const [presensiResult, izinResult] = await Promise.all([
+        ApiClient.request('/presensi'),
+        ApiClient.request('/izin')
+      ]);
+      const attendance = presensiResult.records.map(record => ({
+        id: `presensi-${record.id}`,
+        rawDate: record.tanggal,
+        tanggal: this.formatDate(record.tanggal),
+        sesi: record.jenis_presensi === 'subuh' ? 'Shubuh' : 'Malam',
+        metode: 'Foto presensi',
+        waktuBukti: new Date(record.waktu_presensi).toLocaleString('id-ID'),
+        status: { hadir: 'Hadir', terlambat: 'Terlambat', alpa: 'Alpa', izin: 'Izin' }[record.status] || record.status,
+        statusCode: record.status,
+        detail: `Lokasi: ${record.lat}, ${record.long}`,
+        foto: record.foto_wajah,
+        user: {
+          ...record.user,
+          nama: escapeHtml(record.user.nama),
+          nim_nip: escapeHtml(record.user.nim_nip),
+          email: escapeHtml(record.user.email)
+        }
+      }));
+      const leave = izinResult.records.map(record => ({
+        id: `izin-${record.id}`,
+        dbId: record.id,
+        rawDate: record.tanggal_izin,
+        createdAt: record.created_at,
+        tanggal: this.formatDate(record.tanggal_izin),
+        sesi: 'Izin',
+        metode: 'Permohonan izin',
+        waktuBukti: `Diajukan ${new Date(record.created_at).toLocaleString('id-ID')}`,
+        status: 'Izin tercatat; status persetujuan tidak tersedia pada ERD',
+        statusCode: 'izin',
+        fileName: record.file_bukti ? escapeHtml(record.file_bukti.split('/').pop()) : '',
+        fileUrl: record.file_bukti,
+        detail: escapeHtml(record.alasan),
+        user: {
+          ...record.user,
+          nama: escapeHtml(record.user.nama),
+          nim_nip: escapeHtml(record.user.nim_nip),
+          email: escapeHtml(record.user.email)
+        }
+      }));
+
+      const history = [...attendance, ...leave].sort((a, b) => new Date(b.rawDate) - new Date(a.rawDate));
+      AppData.riwayatPenghuniPrivate = history;
+      AppData.riwayatPresensi = history;
+      AppData.approvalQueue = leave
+        .filter(record => record.statusCode === 'pending')
+        .map(record => ({
+          ...record,
+          id: record.dbId,
+          nama: record.user.nama,
+          nim: record.user.nim_nip || record.user.email,
+          kamar: this.roomLabel(record.user),
+          alasan: record.detail,
+          waktu: new Date(record.createdAt).toLocaleTimeString('id-ID'),
+          kategori: 'Permohonan izin',
+          avatar: ''
+        }));
+
+      if (AppData.sessionUser.role !== 'penghuni') {
+        const residentResult = await ApiClient.request('/residents');
+        const today = new Date().toDateString();
+        const todayAttendance = attendance.filter(record =>
+          new Date(record.rawDate).toDateString() === today && record.sesi === 'Shubuh'
+        );
+        const todayLeave = leave.filter(record =>
+          new Date(record.rawDate).toDateString() === today && record.statusCode !== 'ditolak'
+        );
+        AppData.monitoringShubuh = residentResult.users.map(user => {
+          const record = todayAttendance.find(item => item.user.id === user.id);
+          const approvedLeave = todayLeave.find(item => item.user.id === user.id);
+          const statusCode = record ? record.statusCode : approvedLeave ? 'izin' : 'belum';
+          return {
+            id: user.id,
+            nim: escapeHtml(user.nim_nip || user.email),
+            nama: escapeHtml(user.nama),
+            initials: user.nama.split(' ').map(part => part[0]).join('').slice(0, 2),
+            kamar: this.roomLabel(user),
+            waktu: record ? record.waktuBukti : '-',
+            subtext: record ? 'Foto presensi tersimpan' : approvedLeave ? 'Izin tercatat' : 'Belum ada presensi',
+            foto: record?.foto || null,
+            status: record ? record.status : approvedLeave ? approvedLeave.status : 'Belum Ada Presensi',
+            statusCode,
+            catatan: record?.detail || '-'
+          };
+        });
+      }
+
+      if (AppData.sessionUser.role === 'admin') {
+        const usersResult = await ApiClient.request('/users');
+        AppData.studentsMaster = usersResult.users
+          .filter(user => user.role === 'penghuni')
+          .map(user => ({
+            nim: user.nim_nip || user.email,
+            nama: user.nama,
+            fakultas: '-',
+            fakultasDetail: 'Tidak tersedia pada database',
+            kamar: this.roomLabel(user),
+            fasilitator: '-',
+            status: 'Aktif',
+            statusCode: 'aktif',
+            avatar: ''
+          }));
+        AppData.facilitatorsMaster = usersResult.users
+          .filter(user => user.role === 'fasil')
+          .map(user => ({
+            id: user.id,
+            nim: escapeHtml(user.nim_nip || user.email),
+            nama: escapeHtml(user.nama),
+            gedung: escapeHtml(user.kamar?.gedung?.nama_gedung || '-'),
+            binaanCount: '-',
+            phone: '-',
+            status: 'Aktif'
+          }));
+      }
+
+      this.renderRiwayatTable();
+      this.renderAdminMasterTable();
+      this.renderAdminFacilitatorsTable();
+      this.renderFacilitatorQueue();
+      this.renderFacilitatorMonitoring();
+    } catch (error) {
+      showToast(`Gagal memuat data: ${error.message}`, 'danger');
+    }
   },
 
   /* View 1: Riwayat Presensi (Penghuni sees private, Fasil/Admin sees full) */
@@ -197,7 +379,7 @@ const App = {
         iconAction = `<button class="btn btn-outline btn-sm" onclick="App.openDetailModal('${item.id}')">Bukti</button>`;
       } else if (item.statusCode === 'izin') {
         badgeClass = 'info';
-        iconAction = `<button class="btn btn-outline btn-sm" onclick="App.openFileModal('${item.fileName || 'Surat_Izin.pdf'}')">PDF</button>`;
+        iconAction = `<button class="btn btn-outline btn-sm" onclick="App.openFileModal('${item.fileName || 'Bukti izin'}', '${item.fileUrl || ''}')">Bukti</button>`;
       } else if (item.statusCode === 'pending') {
         badgeClass = 'warning';
         iconAction = `<button class="btn btn-outline btn-sm" onclick="App.openDetailModal('${item.id}')">Detail</button>`;
@@ -286,10 +468,10 @@ const App = {
       <tr>
         <td>
           <div style="font-weight:700; color:var(--text-primary);">${f.nama}</div>
-          <div style="font-size:11px; color:var(--text-muted);">NIP: ${f.nip}</div>
+          <div style="font-size:11px; color:var(--text-muted);">NIP: ${f.nim}</div>
         </td>
         <td><strong>${f.gedung}</strong></td>
-        <td><span class="pill-badge-green">${f.binaanCount} Mahasiswa</span></td>
+          <td><span class="pill-badge-green">${f.binaanCount === '-' ? '-' : `${f.binaanCount} Mahasiswa`}</span></td>
         <td>${f.phone}</td>
         <td><span class="status-pill success"><span class="dot"></span> ${f.status}</span></td>
       </tr>
@@ -304,7 +486,7 @@ const App = {
     if (AppData.approvalQueue.length === 0) {
       queueContainer.innerHTML = `
         <div style="grid-column: span 2; text-align: center; padding: 24px; color: var(--text-muted);">
-          Semua pengajuan izin telah selesai diproses.
+          Tabel izin pada database tidak memiliki kolom status persetujuan.
         </div>
       `;
       return;
@@ -327,7 +509,7 @@ const App = {
         </div>
         <div class="approval-file">
           <span>📄 ${item.fileName}</span>
-          <button class="btn btn-outline btn-sm" onclick="App.openFileModal('${item.fileName}')">Pratinjau</button>
+          <button class="btn btn-outline btn-sm" onclick="App.openFileModal('${item.fileName}', '${item.fileUrl}')">Buka bukti</button>
         </div>
         <div class="btn-row" style="margin-top: 10px;">
           <button class="btn btn-primary btn-sm btn-block" onclick="App.approveLeave('${item.id}')">Setujui Izin</button>
@@ -356,6 +538,7 @@ const App = {
       let badgeClass = 'success';
       if (m.statusCode === 'alpa') badgeClass = 'danger';
       if (m.statusCode === 'izin') badgeClass = 'info';
+      if (m.statusCode === 'belum') badgeClass = 'warning';
 
       const photoThumb = m.foto
         ? `<img src="${m.foto}" style="width:36px; height:36px; border-radius:6px; object-fit:cover;" />`
@@ -422,82 +605,89 @@ const App = {
       });
     }
 
+    const fileInput = document.getElementById('file-upload-input');
+    if (fileInput) {
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        const preview = document.getElementById('file-attached-card');
+        if (!file || !preview) return;
+        preview.style.display = 'flex';
+        preview.querySelector('h5').textContent = file.name;
+        preview.querySelector('p').textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+      });
+    }
+
     // Submit Permohonan Izin (Penghuni)
     const formIzin = document.getElementById('form-permohonan-izin');
     if (formIzin) {
-      formIzin.addEventListener('submit', (e) => {
+      formIzin.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const file = fileInput?.files[0];
+        if (!file) return showToast('Pilih berkas bukti izin terlebih dahulu.', 'warning');
+        if (file.size > 5 * 1024 * 1024) return showToast('Ukuran berkas maksimal 5 MB.', 'warning');
+        const session = document.querySelector('.session-tile.selected')?.dataset.session || 'shubuh';
+        const category = document.getElementById('kategori-izin').value;
+        const formData = new FormData();
+        formData.append('tanggal_izin', document.getElementById('tanggal-izin').value);
+        formData.append('alasan', `${category} | Sesi: ${session} | ${textarea.value}`);
+        formData.append('bukti', file);
 
-        const newRecord = {
-          id: `HIST-00${AppData.riwayatPenghuniPrivate.length + 1}`,
-          tanggal: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }),
-          sesi: "Shubuh (04.00-06.00)",
-          metode: "Permohonan Izin Mandiri",
-          waktuBukti: `Diajukan ${new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB`,
-          status: "Menunggu Persetujuan",
-          statusCode: "pending",
-          fileName: "Surat_Izin_Pengajuan.pdf",
-          detail: textarea ? textarea.value : "Permohonan izin baru"
-        };
-
-        AppData.riwayatPenghuniPrivate.unshift(newRecord);
-        this.renderRiwayatTable();
-        showToast("Pengajuan izin berhasil dikirim ke Fasilitator!", "success");
+        try {
+          await ApiClient.request('/izin', { method: 'POST', body: formData });
+          formIzin.reset();
+          document.getElementById('file-attached-card').style.display = 'none';
+          await this.renderAllViews();
+          showToast('Pengajuan izin berhasil disimpan.', 'success');
+        } catch (error) {
+          showToast(error.message, 'danger');
+        }
       });
     }
 
     // Add Student Form (Admin)
     const formQuickStudent = document.getElementById('form-quick-student');
     if (formQuickStudent) {
-      formQuickStudent.addEventListener('submit', (e) => {
+      formQuickStudent.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const nama = document.getElementById('quick-nama').value;
-        const nim = document.getElementById('quick-nim').value;
-        const kamar = document.getElementById('quick-kamar').value;
-        const fasil = document.getElementById('quick-fasil').value;
-
-        AppData.studentsMaster.unshift({
-          nim,
-          nama,
-          fakultas: "Teknologi Informasi",
-          fakultasDetail: "Fakultas Teknologi Informasi",
-          kamar: `Blok A - Lt. 2 (Kmr ${kamar})`,
-          fasilitator: fasil || "Ust. Ilham Ramadhan, S.Kom.",
-          status: "Aktif",
-          statusCode: "aktif",
-          avatar: ""
-        });
-
-        this.renderAdminMasterTable();
-        showToast(`Penghuni baru "${nama}" berhasil ditambahkan!`, "success");
-        formQuickStudent.reset();
+        const payload = {
+          nim_nip: document.getElementById('quick-nim').value.trim(),
+          nama: document.getElementById('quick-nama').value.trim(),
+          email: document.getElementById('quick-email').value.trim(),
+          password: document.getElementById('quick-password').value,
+          role: 'penghuni'
+        };
+        try {
+          await ApiClient.request('/users', { method: 'POST', body: JSON.stringify(payload) });
+          formQuickStudent.reset();
+          await this.renderAllViews();
+          showToast(`Akun penghuni "${payload.nama}" berhasil dibuat.`, 'success');
+        } catch (error) {
+          showToast(error.message, 'danger');
+        }
       });
     }
 
     // Add Facilitator Form (Admin Modal)
     const formAddFasil = document.getElementById('form-add-fasilitator');
     if (formAddFasil) {
-      formAddFasil.addEventListener('submit', (e) => {
+      formAddFasil.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const nama = document.getElementById('fasil-nama').value;
-        const nip = document.getElementById('fasil-nip').value;
-        const gedung = document.getElementById('fasil-gedung').value;
-        const phone = document.getElementById('fasil-phone').value;
-
-        AppData.facilitatorsMaster.unshift({
-          id: `FAS-00${AppData.facilitatorsMaster.length + 1}`,
-          nip,
-          nama,
-          gedung,
-          binaanCount: 30,
-          phone,
-          status: "Aktif"
-        });
-
-        this.renderAdminFacilitatorsTable();
-        this.closeAllModals();
-        showToast(`Fasilitator baru "${nama}" berhasil ditambahkan!`, "success");
-        formAddFasil.reset();
+        const payload = {
+          nim_nip: document.getElementById('fasil-nip').value.trim(),
+          nama: document.getElementById('fasil-nama').value.trim(),
+          email: document.getElementById('fasil-email').value.trim(),
+          password: document.getElementById('fasil-password').value,
+          role: 'fasil'
+        };
+        try {
+          await ApiClient.request('/users', { method: 'POST', body: JSON.stringify(payload) });
+          this.closeAllModals();
+          formAddFasil.reset();
+          await this.renderAllViews();
+          showToast(`Akun fasilitator "${payload.nama}" berhasil dibuat.`, 'success');
+        } catch (error) {
+          showToast(error.message, 'danger');
+        }
       });
     }
 
@@ -549,16 +739,25 @@ const App = {
   },
 
   /* Approval Actions (Facilitator) */
-  approveLeave(id) {
-    AppData.approvalQueue = AppData.approvalQueue.filter(item => item.id !== id);
-    this.renderFacilitatorQueue();
-    showToast("Permohonan izin disetujui", "success");
+  async approveLeave(id) {
+    await this.updateLeaveStatus(id, 'disetujui');
   },
 
-  rejectLeave(id) {
-    AppData.approvalQueue = AppData.approvalQueue.filter(item => item.id !== id);
-    this.renderFacilitatorQueue();
-    showToast("Permohonan izin ditolak", "danger");
+  async rejectLeave(id) {
+    await this.updateLeaveStatus(id, 'ditolak');
+  },
+
+  async updateLeaveStatus(id, status_izin) {
+    try {
+      await ApiClient.request(`/izin/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status_izin })
+      });
+      await this.renderAllViews();
+      showToast(status_izin === 'disetujui' ? 'Permohonan izin disetujui.' : 'Permohonan izin ditolak.', 'success');
+    } catch (error) {
+      showToast(error.message, 'danger');
+    }
   },
 
   /* Modals Controller */
@@ -605,17 +804,15 @@ const App = {
     document.getElementById('modal-detail-record').classList.add('active');
   },
 
-  openFileModal(fileName) {
+  openFileModal(fileName, fileUrl) {
     const modalBody = document.getElementById('modal-file-body');
     if (modalBody) {
       modalBody.innerHTML = `
         <div style="text-align: center; padding: 20px;">
           <h4 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">${fileName}</h4>
-          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Dokumen Terverifikasi Digital oleh Universitas Andalas</p>
-          <div style="margin-top: 20px; background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 8px; padding: 30px;">
-            <p style="font-size: 13px; color: #475569;">[Pratinjau Dokumen PDF / Surat Keterangan Resmi]</p>
-            <span style="font-size: 11px; color: #94a3b8;">Format: Portable Document Format (1.2 MB)</span>
-          </div>
+          ${fileUrl && fileUrl.startsWith('/uploads/bukti_izin/')
+            ? `<a class="btn btn-primary" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">Buka / unduh bukti</a>`
+            : '<p style="font-size: 12px; color: var(--text-muted); margin-top: 12px;">Berkas bukti tidak tersedia.</p>'}
         </div>
       `;
     }
@@ -652,14 +849,14 @@ function openVerificationSuccessModal(dataUrl) {
     modalBody.innerHTML = `
       <div style="text-align: center;">
         <img src="${dataUrl}" style="width: 150px; height: 150px; border-radius: 50%; object-fit: cover; border: 3px solid var(--primary); margin-bottom: 14px;" />
-        <h3 style="font-size: 17px; font-weight: 800; color: var(--primary);">PRESENSI BERHASIL DITERIMA</h3>
-        <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Skor biometrik liveness: <strong>98.4% (Match)</strong></p>
+        <h3 style="font-size: 17px; font-weight: 800; color: var(--primary);">PRESENSI TERCATAT</h3>
+        <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Foto dan koordinat GPS tersimpan di sistem.</p>
         <div style="background: var(--primary-light); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--primary-dark); font-weight: 700; margin-top: 14px;">
-          📍 Geolokasi Kampus Limau Manis (Lat: -0.9154, Long: 100.4589)
+          Verifikasi kecocokan wajah dan batas geofence belum dikonfigurasi.
         </div>
       </div>
     `;
   }
   document.getElementById('modal-verification-success').classList.add('active');
-  showToast("Presensi berhasil dicatat!", "success");
+  showToast('Presensi berhasil disimpan ke database.', 'success');
 }

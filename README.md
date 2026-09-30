@@ -16,3 +16,23 @@ Tugas Akhir Mata Kuliah **Pengembangan Aplikasi Berbasis Framework**. REST API B
    ```bash
    git clone [https://github.com/FatiaRahmah/sistem-absensi-asrama-unand-koa.git](https://github.com/FatiaRahmah/sistem-absensi-asrama-unand-koa.git)
    cd sistem-absensi-asrama-unand-koa
+   ```
+
+2. **Install dependency dan siapkan environment:**
+   ```bash
+   npm install
+   Copy-Item .env.example .env
+   ```
+   Edit `.env` dan isi `DATABASE_URL` dengan user/password MySQL lokal. Nama database pada contoh adalah `asrama_db` (tanpa akhiran `.sql`); ganti jika nama database di MySQL berbeda. Ganti juga `JWT_SECRET` dengan secret acak yang panjang. Karena ERD tidak memiliki kolom role, daftarkan NIM admin dan fasilitator sebagai daftar dipisahkan koma pada `ADMIN_NIMS` dan `FACILITATOR_NIMS`. Password MySQL yang berisi karakter khusus harus di-URL-encode.
+
+3. **Generate Prisma Client dan jalankan server:**
+   ```bash
+   npx prisma validate
+   npx prisma generate
+   npm run dev
+   ```
+   Buka `http://localhost:3000`. Database harus sudah berisi tabel yang sesuai dengan model pada `prisma/schema.prisma`. Langkah ini tidak menjalankan migrasi, `db push`, atau mengubah struktur database.
+
+Login memakai nilai `nim_nip` atau `email` dan password yang tersimpan sebagai hash bcrypt. Endpoint aplikasi dilayani dari origin yang sama; data presensi dan izin hanya dapat dibaca sesuai role akun yang login.
+
+Jika tabel `user` masih kosong, isi `ADMIN_NIMS` dengan NIM admin yang sama seperti `INITIAL_ADMIN_NIM`, lalu isi nama, email, dan password bootstrap di `.env`. Jalankan `npm run bootstrap:admin` satu kali. Script menolak berjalan jika tabel `user` sudah berisi akun. Hapus `INITIAL_ADMIN_PASSWORD` dari `.env` setelah bootstrap; daftar `ADMIN_NIMS` tetap diperlukan karena ERD tidak menyimpan role.
